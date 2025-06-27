@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/coredns/coredns/plugin"
-	clog "github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/miekg/dns"
 )
 
@@ -40,18 +39,21 @@ func (r *responseCaptureWriter) WriteMsg(res *dns.Msg) error {
 }
 
 func (a *AzRoute) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
-	log.Printf("[azroute] ServeDNS called")
-	clog.Info("[azroute] ServeDNS called")
-	clientIP := getClientIP(w.RemoteAddr().String())
-	az := a.findAZ(clientIP)
-	log.Printf("[azroute] clientIP=%s, matched AZ=%s", clientIP, az)
-
 	// 捕获下游（如 hosts）插件的响应
 	rw := &responseCaptureWriter{ResponseWriter: w}
 	code, err := plugin.NextOrFailure(a.Name(), a.Next, ctx, rw, r)
 	if err != nil || rw.Msg == nil || len(rw.Msg.Answer) == 0 {
 		return code, err
 	}
+	// 仅有一个地址时没有必要判断可用区逻辑直接返回
+	if len(rw.Msg.Answer) == 1 {
+		w.WriteMsg(rw.Msg)
+		return dns.RcodeSuccess, nil
+	}
+
+	clientIP := getClientIP(w.RemoteAddr().String())
+	az := a.findAZ(clientIP)
+	log.Printf("[azroute] clientIP=%s, matched AZ=%s", clientIP, az)
 
 	var answers []dns.RR
 	var allAnswers []dns.RR
@@ -76,7 +78,7 @@ func (a *AzRoute) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	}
 	log.Printf("[azroute] hosts returned IPs: %v", allIPs)
 	// 如果没有同 AZ 的，返回全部 A/AAAA
-	if len(answers) == 0 {
+	if len(answers) == 0 || len(allIPs) == 1 {
 		answers = allAnswers
 	}
 	var retIPs []string

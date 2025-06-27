@@ -24,6 +24,45 @@ azroute 是一个为 CoreDNS 设计的可用区（AZ）就近调度插件，结�
 2. 集成插件到 CoreDNS 主项目并编译
 3. 启动 CoreDNS 和 API 服务，体验就近调度
 
+## 编译
+
+```bash
+mkdir -p /code/plugins
+cd /code/plugins
+git clone https://github.com/kbsonlong/azroute.git
+cd /code
+git clone https://github.com/coredns/coredns.git
+cd coredns
+```
+
+- 修改go.mod
+
+```text
+require (
+    azroute v0.0.0
+    ...
+)
+...
+replace azroute => ../azroute/azroute
+
+```
+
+- 修改plugin.cfg
+
+```bash
+sed -i 's/hosts:hosts/azroute:azroute\nhosts:hosts/g' plugin.cfg
+```
+
+- 加载azroute插件
+
+```bash
+# vim core/plugin/zplugin.go
+...
+_ "azroute"
+
+```
+
+
 ## 详细说明
 - [使用文档](docs/usage.md)
 - [设计文档](docs/design.md)
