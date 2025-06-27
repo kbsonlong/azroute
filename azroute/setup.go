@@ -1,6 +1,7 @@
 package azroute
 
 import (
+	"fmt"
 	"log"
 
 	"github.com/coredns/caddy"
@@ -24,6 +25,16 @@ func setup(c *caddy.Controller) error {
 					return c.ArgErr()
 				}
 				azroute.ApiUrl = c.Val()
+			case "lru_size":
+				if !c.NextArg() {
+					return c.ArgErr()
+				}
+				var size int
+				_, err := fmt.Sscanf(c.Val(), "%d", &size)
+				if err != nil || size <= 0 {
+					return c.Errf("invalid lru_size value: %s", c.Val())
+				}
+				azroute.LruSize = size
 			}
 		}
 	}

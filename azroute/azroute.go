@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/coredns/coredns/plugin"
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/miekg/dns"
+	"github.com/yl2chen/cidranger"
 )
 
 type AzMapEntry struct {
@@ -26,6 +28,10 @@ type AzRoute struct {
 	AzMapLock sync.RWMutex
 	ApiUrl    string
 	IpAzMap   map[string]string // IP -> AZ
+
+	Ranger  cidranger.Ranger // 新增：高效网段查找结构
+	AzCache *lru.Cache       // 新增：LRU缓存
+	LruSize int              // LRU缓存最大容量
 }
 
 type responseCaptureWriter struct {
@@ -113,18 +119,32 @@ func getClientIP(addr string) string {
 }
 
 func (a *AzRoute) findAZ(ip string) string {
+	if a.AzCache != nil {
+		if v, ok := a.AzCache.Get(ip); ok {
+			return v.(string)
+		}
+	}
 	a.AzMapLock.RLock()
 	defer a.AzMapLock.RUnlock()
+	if a.Ranger == nil {
+		return ""
+	}
 	ipAddr := net.ParseIP(ip)
-	for _, entry := range a.AzMap {
-		_, subnet, err := net.ParseCIDR(entry.Subnet)
-		if err == nil {
-			log.Printf("[azroute] findAZ: check ip=%s in subnet=%s", ip, entry.Subnet)
-			if subnet.Contains(ipAddr) {
-				log.Printf("[azroute] findAZ: ip=%s matched subnet=%s, az=%s", ip, entry.Subnet, entry.AZ)
-				return entry.AZ
-			}
+	entries, err := a.Ranger.ContainingNetworks(ipAddr)
+	if err != nil || len(entries) == 0 {
+		if a.AzCache != nil {
+			a.AzCache.Add(ip, "")
 		}
+		return ""
+	}
+	if azEntry, ok := entries[0].(*azRangerEntry); ok {
+		if a.AzCache != nil {
+			a.AzCache.Add(ip, azEntry.AZ())
+		}
+		return azEntry.AZ()
+	}
+	if a.AzCache != nil {
+		a.AzCache.Add(ip, "")
 	}
 	return ""
 }
@@ -133,6 +153,16 @@ func (a *AzRoute) Name() string { return "azroute" }
 
 func (a *AzRoute) InitAndUpdateAzMap() {
 	a.fetchAzMap()
+	size := a.LruSize
+	if size <= 0 {
+		size = 1024 // 默认值
+	}
+	cache, err := lru.New(size)
+	if err != nil {
+		log.Printf("[azroute] LRU缓存初始化失败: %v", err)
+	} else {
+		a.AzCache = cache
+	}
 	go func() {
 		for {
 			time.Sleep(60 * time.Second)
@@ -160,6 +190,33 @@ func (a *AzRoute) fetchAzMap() {
 	}
 	a.AzMapLock.Lock()
 	a.AzMap = azmap
+	// 构建Ranger
+	ranger := cidranger.NewPCTrieRanger()
+	for _, entry := range azmap {
+		_, network, err := net.ParseCIDR(entry.Subnet)
+		if err == nil {
+			ranger.Insert(&azRangerEntry{network: *network, az: entry.AZ})
+		}
+	}
+	a.Ranger = ranger
+	if a.AzCache != nil {
+		a.AzCache.Purge() // 热加载时清空缓存
+	}
 	a.AzMapLock.Unlock()
 	log.Printf("[azroute] API数据已热加载")
+}
+
+// azRangerEntry实现cidranger.RangerEntry接口
+
+type azRangerEntry struct {
+	network net.IPNet
+	az      string
+}
+
+func (e *azRangerEntry) Network() net.IPNet {
+	return e.network
+}
+
+func (e *azRangerEntry) AZ() string {
+	return e.az
 }
