@@ -1,4 +1,4 @@
-module coredns-azroute-plugin/azroute
+module azroute/azroute
 
 go 1.20
 
