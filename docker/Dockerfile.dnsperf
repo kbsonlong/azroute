@@ -1,0 +1,40 @@
+# DNS Performance Testing Tool Dockerfile
+FROM ubuntu:22.04
+
+# 设置环境变量
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 安装依赖和工具
+RUN apt-get update && apt-get install -y \
+    dnsperf \
+    bind9utils \
+    curl \
+    wget \
+    net-tools \
+    iputils-ping \
+    dnsutils \
+    vim \
+    htop \
+    iotop \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建测试用户
+RUN useradd -m -s /bin/bash tester
+
+# 创建测试目录
+RUN mkdir -p /tests && chown -R tester:tester /tests
+
+# 设置工作目录
+WORKDIR /tests
+
+# 切换到测试用户
+USER tester
+
+# 复制测试脚本
+COPY docker/scripts/ /tests/scripts/
+
+# 设置权限
+RUN chmod +x /tests/scripts/*.sh
+
+# 默认命令
+CMD ["/bin/bash"] 

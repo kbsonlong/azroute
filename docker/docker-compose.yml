@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # CoreDNS 服务
+  coredns:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.coredns
+    container_name: coredns-plugins
+    ports:
+      - "53:53"
+      - "53:53/udp"
+      - "8081:8081"  # 健康检查端口
+      - "9153:9153"  # Prometheus 指标端口
+    volumes:
+      - ./config/GeoLite2-City.mmdb:/data/GeoLite2-City.mmdb:ro
+      - ./logs:/data/logs
+    environment:
+      - TZ=Asia/Shanghai
+    depends_on:
+      - mock-api
+    networks:
+      - coredns-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "coredns", "-conf", "/etc/coredns/Corefile", "-test"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Mock API 服务
+  mock-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.mock-api
+    container_name: coredns-mock-api
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      - coredns-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # DNS 压测工具
+  dnsperf:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dnsperf
+    container_name: coredns-dnsperf
+    volumes:
+      - ./tests:/tests
+      - ./results:/results
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      - coredns-network
+    depends_on:
+      - coredns
+    profiles:
+      - test
+    command: ["/bin/bash", "-c", "tail -f /dev/null"]
+
+  # Prometheus 监控
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: coredns-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - coredns-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # Grafana 可视化
+  grafana:
+    image: grafana/grafana:latest
+    container_name: coredns-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    networks:
+      - coredns-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+networks:
+  coredns-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  prometheus_data:
+  grafana_data: 

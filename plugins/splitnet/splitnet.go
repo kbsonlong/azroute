@@ -7,10 +7,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
-
-	"coredns-plugins/plugins/common"
 
 	"github.com/coredns/coredns/plugin"
 	lru "github.com/hashicorp/golang-lru"
@@ -62,7 +61,7 @@ func (s *SplitNet) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 		return dns.RcodeSuccess, nil
 	}
 
-	clientIP := common.GetClientIP(w.RemoteAddr().String())
+	clientIP := getClientIP(w.RemoteAddr().String())
 	isInternal := s.isInternalIP(clientIP)
 	log.Printf("[splitnet] clientIP=%s, isInternal=%v", clientIP, isInternal)
 
@@ -144,6 +143,17 @@ func (s *SplitNet) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	m.Answer = filteredAnswers
 	w.WriteMsg(m)
 	return dns.RcodeSuccess, nil
+}
+
+// getClientIP 提取客户端IP
+func getClientIP(addr string) string {
+	if strings.Contains(addr, "[") { // IPv6
+		addr = strings.Split(addr, "]:")[0]
+		addr = strings.TrimPrefix(addr, "[")
+	} else {
+		addr = strings.Split(addr, ":")[0]
+	}
+	return addr
 }
 
 // isInternalIP 判断是否为内网IP

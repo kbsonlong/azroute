@@ -1,0 +1,70 @@
+# CoreDNS with custom plugins Dockerfile (Static Build)
+FROM golang:1.23-alpine AS builder
+
+# 安装构建依赖
+RUN apk add --no-cache git make
+
+# 设置工作目录
+WORKDIR /app
+
+# 下载 CoreDNS 源码
+RUN git clone https://github.com/coredns/coredns.git /app/coredns
+
+# 复制插件源码到 CoreDNS 插件目录
+COPY plugins/azroute/ /app/coredns/plugin/azroute/
+COPY plugins/splitnet/ /app/coredns/plugin/splitnet/
+COPY plugins/georoute/ /app/coredns/plugin/georoute/
+
+# 修改 CoreDNS 的 plugin.cfg 文件，添加我们的插件
+RUN echo "azroute:azroute" >> /app/coredns/plugin.cfg && \
+    echo "splitnet:splitnet" >> /app/coredns/plugin.cfg && \
+    echo "georoute:georoute" >> /app/coredns/plugin.cfg
+
+# 修改 CoreDNS 的 go.mod，添加我们的插件依赖
+RUN cd /app/coredns && \
+    go mod edit -require=github.com/oschwald/geoip2-golang@v1.9.0 && \
+    go mod edit -require=github.com/oschwald/maxminddb-golang@v1.12.0 && \
+    go mod edit -require=github.com/hashicorp/golang-lru@v1.0.2 && \
+    go mod edit -require=github.com/yl2chen/cidranger@v1.0.2
+
+# 编译 CoreDNS（包含我们的插件）
+RUN cd /app/coredns && \
+    go mod tidy && \
+    go build -o coredns
+
+# 创建运行时镜像
+FROM alpine:latest
+
+# 安装运行时依赖
+RUN apk add --no-cache ca-certificates tzdata
+
+# 创建 CoreDNS 用户
+RUN addgroup -g 1000 coredns && \
+    adduser -D -s /bin/sh -u 1000 -G coredns coredns
+
+# 从构建阶段复制文件
+COPY --from=builder /app/coredns/coredns /usr/local/bin/coredns
+
+# 复制配置文件
+COPY examples/Corefile /etc/coredns/Corefile
+COPY examples/hosts /etc/coredns/hosts
+
+# 创建数据目录
+RUN mkdir -p /data && chown -R coredns:coredns /data
+
+# 设置工作目录
+WORKDIR /data
+
+# 切换到 coredns 用户
+USER coredns
+
+# 暴露端口
+EXPOSE 53 53/udp 8081 9153
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD coredns -conf /etc/coredns/Corefile -test
+
+# 启动命令
+ENTRYPOINT ["/usr/local/bin/coredns"]
+CMD ["-conf", "/etc/coredns/Corefile"] 

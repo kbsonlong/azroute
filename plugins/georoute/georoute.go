@@ -1,12 +1,11 @@
-package geoip
+package georoute
 
 import (
 	"context"
 	"log"
 	"math"
 	"net"
-
-	"coredns-plugins/plugins/common"
+	"strings"
 
 	"github.com/coredns/coredns/plugin"
 	lru "github.com/hashicorp/golang-lru"
@@ -23,8 +22,8 @@ type GeoLocation struct {
 	Longitude float64 `json:"longitude"`
 }
 
-// GeoIP 基于GeoIP2的就近解析插件
-type GeoIP struct {
+// GeoRoute 基于地理位置的就近解析插件
+type GeoRoute struct {
 	Next              plugin.Handler
 	GeoIPDBPath       string         // GeoIP2数据库路径
 	GeoIPReader       *geoip2.Reader // GeoIP2数据库读取器
@@ -42,11 +41,11 @@ type responseCaptureWriter struct {
 
 func (r *responseCaptureWriter) WriteMsg(res *dns.Msg) error {
 	r.Msg = res
-	return nil // 不直接写出，由 geoip 处理
+	return nil // 不直接写出，由 georoute 处理
 }
 
 // ServeDNS 处理DNS请求
-func (s *GeoIP) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+func (s *GeoRoute) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	// 捕获下游插件的响应
 	rw := &responseCaptureWriter{ResponseWriter: w}
 	code, err := plugin.NextOrFailure(s.Name(), s.Next, ctx, rw, r)
@@ -60,11 +59,11 @@ func (s *GeoIP) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		return dns.RcodeSuccess, nil
 	}
 
-	clientIP := common.GetClientIP(w.RemoteAddr().String())
+	clientIP := getClientIP(w.RemoteAddr().String())
 	clientLocation := s.getClientLocation(clientIP)
-	isInternal := common.IsInternalIP(clientIP)
+	isInternal := isInternalIP(clientIP)
 
-	log.Printf("[geoip] clientIP=%s, isInternal=%v, location=%+v", clientIP, isInternal, clientLocation)
+	log.Printf("[georoute] clientIP=%s, isInternal=%v, location=%+v", clientIP, isInternal, clientLocation)
 
 	// 根据地理位置优选解析结果
 	var filteredAnswers []dns.RR
@@ -91,13 +90,13 @@ func (s *GeoIP) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 		}
 	}
 
-	log.Printf("[geoip] hosts returned IPs: %v", allIPs)
-	log.Printf("[geoip] selected IPs: %v", selectedIPs)
+	log.Printf("[georoute] hosts returned IPs: %v", allIPs)
+	log.Printf("[georoute] selected IPs: %v", selectedIPs)
 
 	// 如果没有匹配的结果，返回全部
 	if len(filteredAnswers) == 0 {
 		filteredAnswers = rw.Msg.Answer
-		log.Printf("[geoip] no preferred servers found, returning all IPs")
+		log.Printf("[georoute] no preferred servers found, returning all IPs")
 	}
 
 	var retIPs []string
@@ -109,7 +108,7 @@ func (s *GeoIP) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 			retIPs = append(retIPs, v.AAAA.String())
 		}
 	}
-	log.Printf("[geoip] final returned IPs: %v", retIPs)
+	log.Printf("[georoute] final returned IPs: %v", retIPs)
 
 	m := new(dns.Msg)
 	m.SetReply(r)
@@ -118,8 +117,45 @@ func (s *GeoIP) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) 
 	return dns.RcodeSuccess, nil
 }
 
+// getClientIP 提取客户端IP
+func getClientIP(addr string) string {
+	if strings.Contains(addr, "[") { // IPv6
+		addr = strings.Split(addr, "]:")[0]
+		addr = strings.TrimPrefix(addr, "[")
+	} else {
+		addr = strings.Split(addr, ":")[0]
+	}
+	return addr
+}
+
+// isInternalIP 判断是否为内网IP（静态通用版，适合无网段动态配置场景）
+func isInternalIP(ip string) bool {
+	ipAddr := net.ParseIP(ip)
+	if ipAddr == nil {
+		return false
+	}
+	// IPv4
+	if ip4 := ipAddr.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == 10:
+			return true
+		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
+			return true
+		case ip4[0] == 192 && ip4[1] == 168:
+			return true
+		case ip4[0] == 127:
+			return true
+		}
+	}
+	// IPv6
+	if ipAddr.IsLoopback() || ipAddr.IsLinkLocalUnicast() || ipAddr.IsLinkLocalMulticast() {
+		return true
+	}
+	return false
+}
+
 // getClientLocation 获取客户端地理位置
-func (s *GeoIP) getClientLocation(ip string) *GeoLocation {
+func (s *GeoRoute) getClientLocation(ip string) *GeoLocation {
 	// 先查缓存
 	if s.LocationCache != nil {
 		if v, ok := s.LocationCache.Get(ip); ok {
@@ -139,7 +175,7 @@ func (s *GeoIP) getClientLocation(ip string) *GeoLocation {
 	// 查询GeoIP2数据库
 	record, err := s.GeoIPReader.City(ipAddr)
 	if err != nil {
-		log.Printf("[geoip] GeoIP lookup failed for %s: %v", ip, err)
+		log.Printf("[georoute] GeoIP lookup failed for %s: %v", ip, err)
 		return nil
 	}
 
@@ -165,7 +201,7 @@ func (s *GeoIP) getClientLocation(ip string) *GeoLocation {
 }
 
 // getServerLocation 获取服务器地理位置
-func (s *GeoIP) getServerLocation(serverIP string) *GeoLocation {
+func (s *GeoRoute) getServerLocation(serverIP string) *GeoLocation {
 	// 先查缓存
 	if s.LocationCache != nil {
 		cacheKey := "server:" + serverIP
@@ -186,7 +222,7 @@ func (s *GeoIP) getServerLocation(serverIP string) *GeoLocation {
 	// 查询GeoIP2数据库
 	record, err := s.GeoIPReader.City(ipAddr)
 	if err != nil {
-		log.Printf("[geoip] GeoIP lookup failed for server %s: %v", serverIP, err)
+		log.Printf("[georoute] GeoIP lookup failed for server %s: %v", serverIP, err)
 		return nil
 	}
 
@@ -213,23 +249,23 @@ func (s *GeoIP) getServerLocation(serverIP string) *GeoLocation {
 }
 
 // isPreferredServer 判断是否为优选服务器
-func (s *GeoIP) isPreferredServer(serverIP string, clientLocation *GeoLocation, isInternal bool) bool {
+func (s *GeoRoute) isPreferredServer(serverIP string, clientLocation *GeoLocation, isInternal bool) bool {
 	// 如果是内网IP，直接返回（由azroute插件处理可用区调度）
 	if isInternal {
-		log.Printf("[geoip] client is internal IP, returning server for azroute processing: %s", serverIP)
+		log.Printf("[georoute] client is internal IP, returning server for azroute processing: %s", serverIP)
 		return true
 	}
 
 	// 如果无法获取客户端位置，返回所有服务器
 	if clientLocation == nil {
-		log.Printf("[geoip] cannot get client location, returning server: %s", serverIP)
+		log.Printf("[georoute] cannot get client location, returning server: %s", serverIP)
 		return true
 	}
 
 	// 获取服务器位置信息
 	serverLocation := s.getServerLocation(serverIP)
 	if serverLocation == nil {
-		log.Printf("[geoip] cannot get server location, returning server: %s", serverIP)
+		log.Printf("[georoute] cannot get server location, returning server: %s", serverIP)
 		return true
 	}
 
@@ -239,15 +275,15 @@ func (s *GeoIP) isPreferredServer(serverIP string, clientLocation *GeoLocation, 
 		serverLocation.Latitude, serverLocation.Longitude,
 	)
 
-	log.Printf("[geoip] server=%s, distance=%.2fkm, threshold=%.2fkm", serverIP, distance, s.DistanceThreshold)
+	log.Printf("[georoute] server=%s, distance=%.2fkm, threshold=%.2fkm", serverIP, distance, s.DistanceThreshold)
 
 	// 根据距离阈值判断
 	if distance <= s.DistanceThreshold {
-		log.Printf("[geoip] server %s is within distance threshold", serverIP)
+		log.Printf("[georoute] server %s is within distance threshold", serverIP)
 		return true
 	}
 
-	log.Printf("[geoip] server %s is too far, distance=%.2fkm", serverIP, distance)
+	log.Printf("[georoute] server %s is too far, distance=%.2fkm", serverIP, distance)
 	return false
 }
 
@@ -270,18 +306,18 @@ func calculateDistance(lat1, lon1, lat2, lon2 float64) float64 {
 }
 
 // Name 插件名称
-func (s *GeoIP) Name() string { return "geoip" }
+func (s *GeoRoute) Name() string { return "georoute" }
 
-// InitGeoIP 初始化GeoIP插件
-func (s *GeoIP) InitGeoIP() {
+// InitGeoRoute 初始化GeoRoute插件
+func (s *GeoRoute) InitGeoRoute() {
 	// 初始化GeoIP2数据库
 	if s.GeoIPDBPath != "" {
 		reader, err := geoip2.Open(s.GeoIPDBPath)
 		if err != nil {
-			log.Printf("[geoip] Failed to open GeoIP database: %v", err)
+			log.Printf("[georoute] Failed to open GeoIP database: %v", err)
 		} else {
 			s.GeoIPReader = reader
-			log.Printf("[geoip] GeoIP database loaded: %s", s.GeoIPDBPath)
+			log.Printf("[georoute] GeoIP database loaded: %s", s.GeoIPDBPath)
 		}
 	}
 
@@ -300,7 +336,7 @@ func (s *GeoIP) InitGeoIP() {
 	}
 	cache, err := lru.New(cacheSize)
 	if err != nil {
-		log.Printf("[geoip] LRU缓存初始化失败: %v", err)
+		log.Printf("[georoute] LRU缓存初始化失败: %v", err)
 	} else {
 		s.LocationCache = cache
 	}
@@ -310,5 +346,5 @@ func (s *GeoIP) InitGeoIP() {
 		s.DistanceThreshold = 1000 // 默认1000公里
 	}
 
-	log.Printf("[geoip] GeoIP plugin initialized with distance threshold: %.2fkm", s.DistanceThreshold)
+	log.Printf("[georoute] GeoRoute plugin initialized with distance threshold: %.2fkm", s.DistanceThreshold)
 }

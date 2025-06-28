@@ -7,10 +7,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
-
-	"coredns-plugins/plugins/common"
 
 	"github.com/coredns/coredns/plugin"
 	lru "github.com/hashicorp/golang-lru"
@@ -58,7 +57,7 @@ func (a *AzRoute) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		return dns.RcodeSuccess, nil
 	}
 
-	clientIP := common.GetClientIP(w.RemoteAddr().String())
+	clientIP := getClientIP(w.RemoteAddr().String())
 	az := a.findAZ(clientIP)
 	log.Printf("[azroute] clientIP=%s, matched AZ=%s", clientIP, az)
 
@@ -210,4 +209,15 @@ func (e *azRangerEntry) Network() net.IPNet {
 
 func (e *azRangerEntry) AZ() string {
 	return e.az
+}
+
+// getClientIP 提取客户端IP
+func getClientIP(addr string) string {
+	if strings.Contains(addr, "[") { // IPv6
+		addr = strings.Split(addr, "]:")[0]
+		addr = strings.TrimPrefix(addr, "[")
+	} else {
+		addr = strings.Split(addr, ":")[0]
+	}
+	return addr
 }
