@@ -1,106 +1,169 @@
-# CoreDNS azroute 插件
+# CoreDNS-Plugins - CoreDNS 智能路由插件集合
 
-## 项目简介
-azroute 是一个为 CoreDNS 设计的可用区（AZ）就近调度插件，结合 hosts 插件和 API 动态网段-AZ 映射，实现内部服务 DNS 解析的智能就近返回。
+CoreDNS-Plugins 是一套基于 CoreDNS 的智能DNS解析插件集合，包含三个核心插件：
 
-## 主要特性
-- 支持通过 API 动态获取网段与可用区（AZ）映射
-- 与 hosts 插件配合，自动优选同 AZ 的 IP 返回
-- 支持 A/AAAA 记录，IPv4/IPv6
-- API 热加载，异常自动容错
-- 用户只需维护 hosts 文件，无需关心 AZ 信息
+- **azroute**: 可用区智能路由插件
+- **splitnet**: 内外网区分解析插件  
+- **geoip**: 基于地理位置的就近解析插件
 
-## 目录结构
+## 插件执行顺序
+
+正确的插件执行顺序为：
 ```
-.
-├── azroute/         # 插件源码
-├── az-mock-api/     # Gin API 示例服务
-├── docs/            # 使用文档与设计文档
-└── README.md
+客户端请求 → geoip → splitnet → azroute → hosts → forward → 返回结果
 ```
 
-## 快速上手
-1. 按照 [docs/usage.md](docs/usage.md) 配置 Corefile、hosts 和 API 服务
-2. 集成插件到 CoreDNS 主项目并编译
-3. 启动 CoreDNS 和 API 服务，体验就近调度
+## 处理逻辑
 
-## 编译
+1. **geoip 插件**: 识别客户端IP类型
+   - 内网IP: 返回所有服务器IP
+   - 外网IP: 根据地理位置计算距离，筛选最优服务器IP
+
+2. **splitnet 插件**: 根据客户端IP类型过滤服务器IP
+   - 内网客户端: 优先返回内网服务器IP，如果没有内网IP则返回所有服务器IP
+   - 外网客户端: 优先返回外网服务器IP，如果没有外网IP则返回所有服务器IP
+
+3. **azroute 插件**: 根据可用区进行智能路由
+   - 从过滤后的IP列表中，选择与客户端同可用区的IP
+   - 如果没有同可用区IP，则返回所有可用IP
+
+## 项目结构
+
+```
+coredns-plugins/
+├── plugins/           # 插件源码
+│   ├── azroute/      # 可用区智能路由插件
+│   ├── splitnet/     # 内外网区分解析插件
+│   ├── geoip/        # 地理位置就近解析插件
+│   └── common/       # 公共函数包
+├── az-mock-api/      # API模拟服务
+├── examples/         # 配置示例和测试脚本
+└── docs/            # 详细文档
+```
+
+## 快速开始
+
+### 1. 编译插件
 
 ```bash
-mkdir -p /code/plugins
-cd /code/plugins
-git clone https://github.com/kbsonlong/azroute.git
-cd /code
-git clone https://github.com/coredns/coredns.git
-cd coredns
+# 编译所有插件
+cd plugins/azroute && go build -buildmode=plugin -o azroute.so
+cd ../splitnet && go build -buildmode=plugin -o splitnet.so  
+cd ../geoip && go build -buildmode=plugin -o geoip.so
 ```
 
-- 修改go.mod
-
-```text
-require (
-    azroute v0.0.0
-    ...
-)
-...
-replace azroute => ../azroute/azroute
-
-```
-
-- 修改plugin.cfg
+### 2. 启动API服务
 
 ```bash
-sed -i 's/hosts:hosts/azroute:azroute\nhosts:hosts/g' plugin.cfg
+cd az-mock-api
+go run main.go
 ```
 
-- 加载azroute插件
+### 3. 配置CoreDNS
 
-```bash
-# vim core/plugin/zplugin.go
-...
-_ "azroute"
+参考 `examples/Corefile` 进行配置：
 
-```
-
-
-## 详细说明
-- [使用文档](docs/usage.md)
-- [设计文档](docs/design.md)
-
-## 优化方案说明
-
-### 1. Trie（基数树）高效网段查找
-- 使用 [cidranger](https://github.com/yl2chen/cidranger) 实现网段的 Trie 存储与查找，查找复杂度低，支持大规模网段。
-- 每次热加载 AZ 数据时自动重建 Trie 索引。
-
-### 2. LRU 缓存热点 IP 查询
-- 使用 [golang-lru](https://github.com/hashicorp/golang-lru) 实现最近最少使用缓存。
-- IP->AZ 映射缓存，热点 IP 查询可直接命中缓存，极大提升性能。
-- 缓存容量可通过 `lru_size` 参数配置，默认 1024 条。
-- 热加载 AZ 数据时自动清空缓存，保证数据一致性。
-
-### 3. 配置示例
-
-```conf
-azroute {
-    azmap_api http://localhost:8080/azmap
-    lru_size 4096
+```corefile
+.:53 {
+    geoip {
+        geoip_db /path/to/GeoLite2-City.mmdb
+        cache_size 2048
+        distance_threshold 1000
+    }
+    
+    splitnet {
+        api_url http://localhost:8080/internal_cidr
+        api_interval 30s
+        cache_size 1024
+    }
+    
+    azroute {
+        api_url http://localhost:8080/azmap
+        api_interval 30s
+        cache_size 1024
+    }
+    
+    hosts ./hosts
+    forward . 8.8.8.8
+    cache
 }
 ```
-- `azmap_api`：网段-AZ映射API地址
-- `lru_size`：LRU缓存最大条目数（不是字节数）
 
-### 4. 内存占用估算
-- 1000 条网段时，azroute 插件总占用约 330KB
-- 1万条网段时，约 2MB
-- LRU缓存最大占用 = lru_size × 单条entry大小（可配置，默认1024条，最大8K条也仅约0.5MB）
-- 详见 [docs/memory_analysis.md](docs/memory_analysis.md)
+### 4. 测试
 
-### 5. 性能收益
-- Trie结构查找大幅降低单次查找延迟
-- LRU缓存极大提升热点IP查询性能，降低后端压力
-- 支持大规模网段和高并发场景
+```bash
+cd examples
+./test.sh
+```
 
-## 参考
-- [cidranger](https://github.com/yl2chen/cidranger)
-- [golang-lru](https://github.com/hashicorp/golang-lru)
+## 插件详情
+
+### azroute 插件
+
+根据客户端可用区信息，从解析结果中优选同可用区的IP地址。
+
+**特性**:
+- 支持动态可用区映射配置
+- LRU缓存提升性能
+- 自动热加载配置更新
+
+**配置参数**:
+- `api_url`: 可用区映射API地址
+- `api_interval`: API刷新间隔
+- `cache_size`: 缓存大小
+
+### splitnet 插件
+
+根据客户端IP类型（内网/外网），过滤解析结果中的服务器IP。
+
+**特性**:
+- 动态获取内网CIDR配置
+- 支持IPv4和IPv6
+- 缓存机制减少API调用
+
+**配置参数**:
+- `api_url`: 内网CIDR获取API地址
+- `api_interval`: API刷新间隔
+- `cache_size`: 缓存大小
+
+### geoip 插件
+
+基于GeoIP2数据库，根据客户端地理位置进行就近解析。
+
+**特性**:
+- 支持GeoIP2 City数据库
+- 内网IP自动识别
+- 距离阈值过滤
+- LRU缓存优化性能
+
+**配置参数**:
+- `geoip_db`: GeoIP2数据库文件路径
+- `cache_size`: LRU缓存大小
+- `distance_threshold`: 距离阈值（公里）
+
+## 工作流程示例
+
+### 内网客户端访问
+1. 客户端IP: `192.168.1.100` (内网)
+2. geoip插件: 识别为内网IP，返回所有服务器IP
+3. splitnet插件: 优先返回内网服务器IP，如果没有内网IP则返回所有服务器IP
+4. azroute插件: 根据可用区筛选最优内网IP
+5. 返回结果
+
+### 外网客户端访问
+1. 客户端IP: `203.0.113.1` (外网)
+2. geoip插件: 根据地理位置计算距离，筛选最优服务器IP
+3. splitnet插件: 优先返回外网服务器IP，如果没有外网IP则返回所有服务器IP
+4. azroute插件: 根据可用区筛选最优外网IP
+5. 返回结果
+
+## 文档
+
+- [Corefile配置示例](docs/Corefile_配置示例.md)
+- [GeoIP插件优化说明](docs/geoip_插件优化说明.md)
+- [插件编译测试指南](docs/插件编译测试指南.md)
+- [GeoIP2数据库配置指南](docs/GeoIP2_数据库配置指南.md)
+
+## 许可证
+
+MIT License
