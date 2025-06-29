@@ -15,21 +15,23 @@ COPY plugins/azroute/ /app/coredns/plugin/azroute/
 COPY plugins/splitnet/ /app/coredns/plugin/splitnet/
 COPY plugins/georoute/ /app/coredns/plugin/georoute/
 
-# 修改 CoreDNS 的 plugin.cfg 文件，添加我们的插件
-RUN echo "azroute:azroute" >> /app/coredns/plugin.cfg && \
-    echo "splitnet:splitnet" >> /app/coredns/plugin.cfg && \
-    echo "georoute:georoute" >> /app/coredns/plugin.cfg
+# 修改 CoreDNS 的 plugin.cfg 文件，将自定义插件插入到 hosts 插件之后
+RUN sed -i '/^hosts:hosts/a azroute:azroute\nsplitnet:splitnet\ngeoroute:georoute' /app/coredns/plugin.cfg
 
-# 修改 CoreDNS 的 go.mod，添加我们的插件依赖
+# 修改 CoreDNS 的 go.mod，添加我们的插件依赖，并用 replace 指向本地插件源码
 RUN cd /app/coredns && \
+    go mod edit -replace=github.com/coredns/coredns/plugin/azroute=./plugin/azroute && \
+    go mod edit -replace=github.com/coredns/coredns/plugin/splitnet=./plugin/splitnet && \
+    go mod edit -replace=github.com/coredns/coredns/plugin/georoute=./plugin/georoute && \
     go mod edit -require=github.com/oschwald/geoip2-golang@v1.9.0 && \
     go mod edit -require=github.com/oschwald/maxminddb-golang@v1.12.0 && \
     go mod edit -require=github.com/hashicorp/golang-lru@v1.0.2 && \
-    go mod edit -require=github.com/yl2chen/cidranger@v1.0.2
-
-# 编译 CoreDNS（包含我们的插件）
-RUN cd /app/coredns && \
+    go mod edit -require=github.com/yl2chen/cidranger@v1.0.2 && \
     go mod tidy && \
+    go mod edit -require=github.com/coredns/coredns/plugin/azroute@v0.0.0 && \
+    go mod edit -require=github.com/coredns/coredns/plugin/splitnet@v0.0.0 && \
+    go mod edit -require=github.com/coredns/coredns/plugin/georoute@v0.0.0 && \
+    go generate && \
     go build -o coredns
 
 # 创建运行时镜像
@@ -54,6 +56,10 @@ RUN mkdir -p /data && chown -R coredns:coredns /data
 
 # 设置工作目录
 WORKDIR /data
+
+# 设置 Go 模块代理
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=sum.golang.google.cn
 
 # 切换到 coredns 用户
 USER coredns

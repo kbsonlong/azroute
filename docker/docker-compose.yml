@@ -8,13 +8,14 @@ services:
       dockerfile: docker/Dockerfile.coredns
     container_name: coredns-plugins
     ports:
-      - "53:53"
-      - "53:53/udp"
+      - "8053:8053"
+      - "8053:8053/udp"
       - "8081:8081"  # 健康检查端口
       - "9153:9153"  # Prometheus 指标端口
     volumes:
       - ./config/GeoLite2-City.mmdb:/data/GeoLite2-City.mmdb:ro
-      - ./logs:/data/logs
+      # - ./logs:/data/logs
+      - ../examples/Corefile:/etc/coredns/Corefile
     environment:
       - TZ=Asia/Shanghai
     depends_on:

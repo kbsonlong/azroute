@@ -1,0 +1,8 @@
+www.example.com A
+api.example.com A
+cdn.example.com A
+mail.example.com A
+blog.example.com A
+shop.example.com A
+support.example.com A
+docs.example.com A

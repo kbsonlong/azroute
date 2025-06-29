@@ -1,0 +1,4 @@
+internal.example.com A
+intranet.example.com A
+dev.example.com A
+test.example.com A

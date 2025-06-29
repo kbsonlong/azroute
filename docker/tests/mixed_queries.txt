@@ -1,0 +1,4 @@
+www.example.com A
+internal.example.com A
+api.example.com A
+intranet.example.com A

@@ -1,7 +1,7 @@
 # Corefile - 结合 azroute、splitnet 和 geoip 插件的智能DNS配置
 # 适用于企业内网DNS解析场景，支持地理位置就近解析
 
-.:53 {
+.:8053 {
     # 日志记录
     log
     
@@ -16,7 +16,7 @@
     
     # geoip插件 - 基于地理位置的就近解析
     geoip {
-        geoip_db /path/to/GeoLite2-City.mmdb
+        geoip_db /data/GeoLite2-City.mmdb
         cache_size 2048
         distance_threshold 1000
     }

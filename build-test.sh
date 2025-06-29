@@ -50,8 +50,12 @@ PLUGIN_CFG="$TEMP_DIR/coredns/plugin.cfg"
 
 # 检查并添加azroute插件
 if ! grep -q "^azroute:" "$PLUGIN_CFG"; then
-    echo "azroute:azroute" >> "$PLUGIN_CFG"
-    echo "✅ 已添加 azroute 插件到 plugin.cfg"
+    sed -i '' '/^hosts:hosts/a\\
+azroute:azroute\\
+splitnet:splitnet\\
+georoute:georoute
+' "$PLUGIN_CFG"
+    echo "✅ 已添加 azroute/splitnet/georoute 插件到 plugin.cfg"
 else
     echo "⚠️  azroute 插件已存在于 plugin.cfg"
 fi
@@ -83,6 +87,7 @@ echo "✅ 已将module路径修改为本地路径"
 # 处理依赖
 echo "处理依赖..."
 go mod tidy
+go generate
 
 # 尝试编译
 echo "开始编译..."
@@ -149,6 +154,7 @@ fi
 
 # 清理临时文件
 echo "清理临时文件..."
+sleep 3600
 rm -rf "$TEMP_DIR"
 
 echo "✅ 测试完成！" 
